@@ -1,13 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getDefaultModel } from "@t3tools/shared/model";
 
 import {
   getAppModelOptions,
+  getAppSettingsSnapshot,
   getSlashModelOptions,
   normalizeCustomModelSlugs,
   resolveAppServiceTier,
   shouldShowFastTierIcon,
   resolveAppModelSelection,
 } from "./appSettings";
+
+const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 
 describe("normalizeCustomModelSlugs", () => {
   it("normalizes aliases, removes built-ins, and deduplicates values", () => {
@@ -101,5 +105,133 @@ describe("shouldShowFastTierIcon", () => {
     expect(shouldShowFastTierIcon("gpt-5.4", "fast")).toBe(true);
     expect(shouldShowFastTierIcon("gpt-5.4", "auto")).toBe(false);
     expect(shouldShowFastTierIcon("gpt-5.3-codex", "fast")).toBe(false);
+  });
+});
+
+function makeLocalStorageMock(): Storage {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+    get length() { return store.size; },
+    key: (index: number) => [...store.keys()][index] ?? null,
+  };
+}
+
+function setStoredSettings(
+  storage: Storage,
+  patch: Record<string, unknown>,
+): void {
+  const base = {
+    codexBinaryPath: "",
+    codexHomePath: "",
+    confirmThreadDelete: true,
+    enableAssistantStreaming: false,
+    codexServiceTier: "auto",
+    customCodexModels: [],
+    customClaudeCodeModels: [],
+    lastUsedProvider: null,
+    lastUsedModel: null,
+  };
+  storage.setItem(
+    APP_SETTINGS_STORAGE_KEY,
+    JSON.stringify({ ...base, ...patch }),
+  );
+}
+
+describe("lastUsedProvider persistence", () => {
+  let mockStorage: Storage;
+
+  beforeEach(() => {
+    mockStorage = makeLocalStorageMock();
+    vi.stubGlobal("window", {
+      localStorage: mockStorage,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to null when no settings are stored", () => {
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedProvider).toBeNull();
+  });
+
+  it("round-trips claude-code through localStorage", () => {
+    setStoredSettings(mockStorage, { lastUsedProvider: "claude-code" });
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedProvider).toBe("claude-code");
+  });
+
+  it("round-trips codex through localStorage", () => {
+    setStoredSettings(mockStorage, { lastUsedProvider: "codex" });
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedProvider).toBe("codex");
+  });
+
+  it("falls back to defaults for invalid provider values", () => {
+    setStoredSettings(mockStorage, { lastUsedProvider: "invalid-provider" });
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedProvider).toBeNull();
+  });
+});
+
+describe("lastUsedModel persistence", () => {
+  let mockStorage: Storage;
+
+  beforeEach(() => {
+    mockStorage = makeLocalStorageMock();
+    vi.stubGlobal("window", {
+      localStorage: mockStorage,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to null when no settings are stored", () => {
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedModel).toBeNull();
+  });
+
+  it("round-trips a model slug through localStorage", () => {
+    setStoredSettings(mockStorage, { lastUsedModel: "claude-sonnet-4-6" });
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedModel).toBe("claude-sonnet-4-6");
+  });
+
+  it("persists provider and model together", () => {
+    setStoredSettings(mockStorage, {
+      lastUsedProvider: "claude-code",
+      lastUsedModel: "claude-sonnet-4-6",
+    });
+    const settings = getAppSettingsSnapshot();
+    expect(settings.lastUsedProvider).toBe("claude-code");
+    expect(settings.lastUsedModel).toBe("claude-sonnet-4-6");
+  });
+});
+
+describe("resolveAppModelSelection with lastUsedModel fallback", () => {
+  it("resolves a known claude-code model slug", () => {
+    const result = resolveAppModelSelection("claude-code", [], "claude-sonnet-4-6");
+    expect(result).toBe("claude-sonnet-4-6");
+  });
+
+  it("falls back to default model when selectedModel is null", () => {
+    const result = resolveAppModelSelection("claude-code", [], null);
+    expect(result).toBe(getDefaultModel("claude-code"));
+  });
+
+  it("falls back to default model when selectedModel is undefined", () => {
+    const result = resolveAppModelSelection("codex", [], undefined);
+    expect(result).toBe(getDefaultModel("codex"));
   });
 });
