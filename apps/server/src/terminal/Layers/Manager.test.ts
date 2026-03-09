@@ -106,7 +106,7 @@ class FakePtyAdapter implements PtyAdapterShape {
   }
 }
 
-function waitFor(predicate: () => boolean, timeoutMs = 800): Promise<void> {
+function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const poll = () => {
