@@ -56,14 +56,57 @@ describe("resolveModelSlug", () => {
   });
 });
 
+describe("normalizeModelSlug (claude-code)", () => {
+  it("maps known claude-code aliases to canonical slugs", () => {
+    expect(normalizeModelSlug("sonnet", "claude-code")).toBe("claude-sonnet-4-6");
+    expect(normalizeModelSlug("opus", "claude-code")).toBe("claude-opus-4-6");
+    expect(normalizeModelSlug("haiku", "claude-code")).toBe("claude-haiku-4-5");
+  });
+
+  it("preserves non-aliased claude-code model slugs", () => {
+    expect(normalizeModelSlug("claude-sonnet-4-6", "claude-code")).toBe("claude-sonnet-4-6");
+    expect(normalizeModelSlug("claude-opus-4-6", "claude-code")).toBe("claude-opus-4-6");
+  });
+});
+
+describe("resolveModelSlug (claude-code)", () => {
+  it("returns claude-code default when the model is missing", () => {
+    expect(resolveModelSlug(undefined, "claude-code")).toBe(DEFAULT_MODEL_BY_PROVIDER["claude-code"]);
+    expect(resolveModelSlug(null, "claude-code")).toBe(DEFAULT_MODEL_BY_PROVIDER["claude-code"]);
+  });
+
+  it("falls back to default for unknown claude-code models", () => {
+    expect(resolveModelSlug("unknown-model", "claude-code")).toBe(DEFAULT_MODEL_BY_PROVIDER["claude-code"]);
+  });
+
+  it("resolves only supported claude-code model options", () => {
+    for (const model of MODEL_OPTIONS_BY_PROVIDER["claude-code"]) {
+      expect(resolveModelSlug(model.slug, "claude-code")).toBe(model.slug);
+    }
+  });
+
+  it("returns claude-code defaults for claude-code provider", () => {
+    expect(getDefaultModel("claude-code")).toBe(DEFAULT_MODEL_BY_PROVIDER["claude-code"]);
+    expect(getModelOptions("claude-code")).toEqual(MODEL_OPTIONS_BY_PROVIDER["claude-code"]);
+  });
+});
+
 describe("getReasoningEffortOptions", () => {
   it("returns codex reasoning options for codex", () => {
     expect(getReasoningEffortOptions("codex")).toEqual(["xhigh", "high", "medium", "low"]);
+  });
+
+  it("returns empty reasoning options for claude-code", () => {
+    expect(getReasoningEffortOptions("claude-code")).toEqual([]);
   });
 });
 
 describe("getDefaultReasoningEffort", () => {
   it("returns provider-scoped defaults", () => {
     expect(getDefaultReasoningEffort("codex")).toBe("high");
+  });
+
+  it("returns null default reasoning effort for claude-code", () => {
+    expect(getDefaultReasoningEffort("claude-code")).toBeNull();
   });
 });

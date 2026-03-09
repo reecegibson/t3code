@@ -4,7 +4,11 @@ import { Effect, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { checkCodexProviderStatus, parseAuthStatusFromOutput } from "./ProviderHealth";
+import {
+  checkCodexProviderStatus,
+  checkClaudeCodeProviderStatus,
+  parseAuthStatusFromOutput,
+} from "./ProviderHealth";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -176,6 +180,139 @@ it.effect("returns warning when login status command is unsupported", () =>
         if (joined === "--version") return { stdout: "codex 1.0.0\n", stderr: "", code: 0 };
         if (joined === "login status") {
           return { stdout: "", stderr: "error: unknown command 'login'", code: 2 };
+        }
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+// ── Claude Code health check tests ──────────────────────────────────
+
+it.effect("returns ready when claude code is installed and authenticated", () =>
+  Effect.gen(function* () {
+    const status = yield* checkClaudeCodeProviderStatus;
+    assert.strictEqual(status.provider, "claude-code");
+    assert.strictEqual(status.status, "ready");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "authenticated");
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "claude 1.0.0\n", stderr: "", code: 0 };
+        if (joined === "auth status") return { stdout: "Authenticated\n", stderr: "", code: 0 };
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+it.effect("returns unavailable when claude code is missing", () =>
+  Effect.gen(function* () {
+    const status = yield* checkClaudeCodeProviderStatus;
+    assert.strictEqual(status.provider, "claude-code");
+    assert.strictEqual(status.status, "error");
+    assert.strictEqual(status.available, false);
+    assert.strictEqual(status.authStatus, "unknown");
+    assert.strictEqual(
+      status.message,
+      "Claude Code CLI (`claude`) is not installed or not on PATH.",
+    );
+  }).pipe(Effect.provide(failingSpawnerLayer("spawn claude ENOENT"))),
+);
+
+it.effect("returns unavailable when claude code is below the minimum supported version", () =>
+  Effect.gen(function* () {
+    const status = yield* checkClaudeCodeProviderStatus;
+    assert.strictEqual(status.provider, "claude-code");
+    assert.strictEqual(status.status, "error");
+    assert.strictEqual(status.available, false);
+    assert.strictEqual(status.authStatus, "unknown");
+    assert.strictEqual(
+      status.message,
+      "Claude Code CLI v0.9.0 is too old for T3 Code. Upgrade to v1.0.0 or newer and restart T3 Code.",
+    );
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "claude 0.9.0\n", stderr: "", code: 0 };
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+it.effect("returns unauthenticated when claude code auth probe reports not authenticated", () =>
+  Effect.gen(function* () {
+    const status = yield* checkClaudeCodeProviderStatus;
+    assert.strictEqual(status.provider, "claude-code");
+    assert.strictEqual(status.status, "error");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "unauthenticated");
+    assert.strictEqual(
+      status.message,
+      "Claude Code is not authenticated. Run `claude login` or set ANTHROPIC_API_KEY.",
+    );
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "claude 1.0.0\n", stderr: "", code: 0 };
+        if (joined === "auth status") {
+          return { stdout: "", stderr: "Not authenticated", code: 1 };
+        }
+        throw new Error(`Unexpected args: ${joined}`);
+      }),
+    ),
+  ),
+);
+
+it.effect(
+  "returns unauthenticated when claude code auth output includes 'not logged in'",
+  () =>
+    Effect.gen(function* () {
+      const status = yield* checkClaudeCodeProviderStatus;
+      assert.strictEqual(status.provider, "claude-code");
+      assert.strictEqual(status.status, "error");
+      assert.strictEqual(status.available, true);
+      assert.strictEqual(status.authStatus, "unauthenticated");
+      assert.strictEqual(
+        status.message,
+        "Claude Code is not authenticated. Run `claude login` or set ANTHROPIC_API_KEY.",
+      );
+    }).pipe(
+      Effect.provide(
+        mockSpawnerLayer((args) => {
+          const joined = args.join(" ");
+          if (joined === "--version") return { stdout: "claude 1.0.0\n", stderr: "", code: 0 };
+          if (joined === "auth status")
+            return { stdout: "Not logged in\n", stderr: "", code: 1 };
+          throw new Error(`Unexpected args: ${joined}`);
+        }),
+      ),
+    ),
+);
+
+it.effect("returns unauthenticated when claude code auth exits non-zero with no auth markers", () =>
+  Effect.gen(function* () {
+    const status = yield* checkClaudeCodeProviderStatus;
+    assert.strictEqual(status.provider, "claude-code");
+    assert.strictEqual(status.status, "error");
+    assert.strictEqual(status.available, true);
+    assert.strictEqual(status.authStatus, "unauthenticated");
+    assert.strictEqual(
+      status.message,
+      "Claude Code is not authenticated. Run `claude login` or set ANTHROPIC_API_KEY.",
+    );
+  }).pipe(
+    Effect.provide(
+      mockSpawnerLayer((args) => {
+        const joined = args.join(" ");
+        if (joined === "--version") return { stdout: "claude 1.0.0\n", stderr: "", code: 0 };
+        if (joined === "auth status") {
+          return { stdout: "", stderr: "something unexpected", code: 2 };
         }
         throw new Error(`Unexpected args: ${joined}`);
       }),

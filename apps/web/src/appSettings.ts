@@ -28,6 +28,7 @@ const AppServiceTierSchema = Schema.Literals(["auto", "fast", "flex"]);
 const MODELS_WITH_FAST_SUPPORT = new Set(["gpt-5.4"]);
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
+  "claude-code": new Set(getModelOptions("claude-code").map((option) => option.slug)),
 };
 
 const AppSettingsSchema = Schema.Struct({
@@ -44,6 +45,15 @@ const AppSettingsSchema = Schema.Struct({
   codexServiceTier: AppServiceTierSchema.pipe(Schema.withConstructorDefault(() => Option.some("auto"))),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  customClaudeCodeModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  lastUsedProvider: Schema.NullOr(Schema.Literals(["codex", "claude-code"])).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+  ),
+  lastUsedModel: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
   ),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
@@ -108,6 +118,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
+    customClaudeCodeModels: normalizeCustomModelSlugs(settings.customClaudeCodeModels, "claude-code"),
   };
 }
 

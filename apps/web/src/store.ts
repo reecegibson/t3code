@@ -144,20 +144,27 @@ function toLegacySessionStatus(
 }
 
 function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex") {
+  if (providerName === "codex" || providerName === "claude-code") {
     return providerName;
   }
   return "codex";
 }
 
 const CODEX_MODEL_SLUGS = new Set<string>(getModelOptions("codex").map((option) => option.slug));
+const CLAUDE_CODE_MODEL_SLUGS = new Set<string>(
+  getModelOptions("claude-code").map((option) => option.slug),
+);
 
 function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (input.sessionProviderName === "codex") {
+  if (input.sessionProviderName === "codex" || input.sessionProviderName === "claude-code") {
     return input.sessionProviderName;
+  }
+  const normalizedClaudeCode = normalizeModelSlug(input.model, "claude-code");
+  if (normalizedClaudeCode && CLAUDE_CODE_MODEL_SLUGS.has(normalizedClaudeCode)) {
+    return "claude-code";
   }
   const normalizedCodex = normalizeModelSlug(input.model, "codex");
   if (normalizedCodex && CODEX_MODEL_SLUGS.has(normalizedCodex)) {
