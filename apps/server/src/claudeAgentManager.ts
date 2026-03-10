@@ -317,6 +317,8 @@ export class ClaudeAgentManager extends EventEmitter {
       ...(isFullAccess ? { allowDangerouslySkipPermissions: true } : {}),
       abortController: context.abortController,
       includePartialMessages: true,
+      // Load user skills (slash commands) and project-level CLAUDE.md config
+      settingSources: ["user", "project"],
       stderr: (data: string) => {
         console.error(`[claude-code][${context.session.threadId}] ${data}`);
       },
