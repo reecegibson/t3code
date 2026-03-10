@@ -453,6 +453,90 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.command).toBe("bun run lint");
   });
 
+  it("extracts command text for Claude Code tool activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-bash-tool",
+        kind: "tool.completed",
+        summary: "Bash complete",
+        payload: {
+          itemType: "command_execution",
+          data: {
+            toolName: "Bash",
+            toolId: "tool-123",
+            input: { command: "ls -la" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.command).toBe("ls -la");
+  });
+
+  it("synthesizes command for Claude Code Grep tool activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-grep-tool",
+        kind: "tool.completed",
+        summary: "Grep complete",
+        payload: {
+          itemType: "file_change",
+          data: {
+            toolName: "Grep",
+            toolId: "tool-789",
+            input: { pattern: "TODO", path: "src/", output_mode: "files_with_matches" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.command).toBe('grep "TODO" src/');
+  });
+
+  it("synthesizes command for Claude Code Read tool activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-read-tool",
+        kind: "tool.completed",
+        summary: "Read complete",
+        payload: {
+          itemType: "file_change",
+          data: {
+            toolName: "Read",
+            toolId: "tool-101",
+            input: { file_path: "/src/index.ts" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.command).toBe("read /src/index.ts");
+  });
+
+  it("extracts file_path for Claude Code file-change tool activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "claude-write-tool",
+        kind: "tool.completed",
+        summary: "Write complete",
+        payload: {
+          itemType: "file_change",
+          data: {
+            toolName: "Write",
+            toolId: "tool-456",
+            input: { file_path: "/src/index.ts", content: "export {}" },
+          },
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.changedFiles).toEqual(["/src/index.ts"]);
+  });
+
   it("extracts changed file paths for file-change tool activities", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

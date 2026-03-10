@@ -31,7 +31,7 @@ export interface ClaudeSessionContext {
   pendingApprovals: Map<string, PendingApprovalRequest>;
   pendingUserInputs: Map<string, PendingUserInputRequest>;
   /** Tool calls that have been started but not yet completed. */
-  activeToolCalls: Map<string, { toolName: string; startedAt: string }>;
+  activeToolCalls: Map<string, { toolName: string; startedAt: string; input: unknown }>;
   activeTurnId: string | undefined;
   stopping: boolean;
 }
@@ -471,6 +471,7 @@ export class ClaudeAgentManager extends EventEmitter {
             context.activeToolCalls.set(toolId, {
               toolName,
               startedAt: new Date().toISOString(),
+              input: blockObj.input,
             });
             this.emitEvent({
               id: EventId.makeUnsafe(randomUUID()),
@@ -547,7 +548,7 @@ export class ClaudeAgentManager extends EventEmitter {
   // ── Helpers ──────────────────────────────────────────────────────
 
   private completeActiveToolCalls(context: ClaudeSessionContext): void {
-    for (const [toolId, { toolName }] of context.activeToolCalls) {
+    for (const [toolId, { toolName, input }] of context.activeToolCalls) {
       this.emitEvent({
         id: EventId.makeUnsafe(randomUUID()),
         kind: "notification",
@@ -559,6 +560,7 @@ export class ClaudeAgentManager extends EventEmitter {
         payload: {
           toolName,
           toolId,
+          input,
         },
       });
     }
