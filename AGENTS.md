@@ -45,6 +45,10 @@ Docs:
 
 - Codex App Server docs: https://developers.openai.com/codex/sdk/#app-server
 
+## README Maintenance
+
+When a significant feature or change is added to the fork, update the **Fork Changes** section in `README.md` with a short bullet describing it. Keep the list concise — one line per feature.
+
 ## Reference Repos
 
 - Open-source Codex repo: https://github.com/openai/codex
