@@ -3,7 +3,7 @@ import { useEffect } from "react";
 
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import ThreadSidebar from "../components/Sidebar";
-import { Sidebar, SidebarProvider } from "~/components/ui/sidebar";
+import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
 function ChatRouteLayout() {
   const navigate = useNavigate();
@@ -30,8 +30,12 @@ function ChatRouteLayout() {
         side="left"
         collapsible="offcanvas"
         className="border-r border-border bg-card text-foreground"
+        resizable={{
+          storageKey: "sidebar_width",
+        }}
       >
         <ThreadSidebar />
+        <SidebarRail />
       </Sidebar>
       <DiffWorkerPoolProvider>
         <Outlet />

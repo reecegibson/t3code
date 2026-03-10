@@ -8,7 +8,13 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 
-import type { ChatMessage, ProposedPlan, SessionPhase, ThreadSession, TurnDiffSummary } from "./types";
+import type {
+  ChatMessage,
+  ProposedPlan,
+  SessionPhase,
+  ThreadSession,
+  TurnDiffSummary,
+} from "./types";
 
 export type ProviderPickerKind = ProviderKind | "cursor";
 
@@ -138,9 +144,7 @@ export function deriveActiveWorkStartedAt(
   return sendStartedAt;
 }
 
-function requestKindFromRequestType(
-  requestType: unknown,
-): PendingApproval["requestKind"] | null {
+function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
   switch (requestType) {
     case "command_execution_approval":
     case "exec_command_approval":
@@ -333,9 +337,7 @@ export function deriveActivePlanState(
         return null;
       }
       const status =
-        record.status === "completed" || record.status === "inProgress"
-          ? record.status
-          : "pending";
+        record.status === "completed" || record.status === "inProgress" ? record.status : "pending";
       return {
         step: record.step,
         status,
@@ -355,7 +357,9 @@ export function deriveActivePlanState(
   return {
     createdAt: latest.createdAt,
     turnId: latest.turnId,
-    ...(payload && "explanation" in payload ? { explanation: payload.explanation as string | null } : {}),
+    ...(payload && "explanation" in payload
+      ? { explanation: payload.explanation as string | null }
+      : {}),
     steps,
   };
 }
@@ -464,16 +468,52 @@ function normalizeCommandValue(value: unknown): string | null {
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
+function synthesizeClaudeCodeToolCommand(data: Record<string, unknown>): string | null {
+  const toolName = asTrimmedString(data.toolName);
+  const input = asRecord(data.input);
+  if (!toolName || !input) return null;
+
+  switch (toolName) {
+    case "Bash":
+      return asTrimmedString(input.command);
+    case "Grep":
+      return asTrimmedString(input.pattern)
+        ? `grep ${JSON.stringify(input.pattern)}${asTrimmedString(input.path) ? ` ${input.path}` : ""}`
+        : null;
+    case "Glob":
+      return asTrimmedString(input.pattern)
+        ? `glob ${JSON.stringify(input.pattern)}${asTrimmedString(input.path) ? ` ${input.path}` : ""}`
+        : null;
+    case "Read":
+      return asTrimmedString(input.file_path) ? `read ${input.file_path}` : null;
+    case "Edit":
+      return asTrimmedString(input.file_path) ? `edit ${input.file_path}` : null;
+    case "Write":
+      return asTrimmedString(input.file_path) ? `write ${input.file_path}` : null;
+    case "WebSearch":
+      return asTrimmedString(input.query) ? `search ${JSON.stringify(input.query)}` : null;
+    case "WebFetch":
+      return asTrimmedString(input.url) ? `fetch ${input.url}` : null;
+    case "Task":
+      return asTrimmedString(input.description) ? `task ${JSON.stringify(input.description)}` : null;
+    default:
+      return null;
+  }
+}
+
 function extractToolCommand(payload: Record<string, unknown> | null): string | null {
   const data = asRecord(payload?.data);
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const itemInput = asRecord(item?.input);
+  const dataInput = asRecord(data?.input);
   const candidates = [
     normalizeCommandValue(item?.command),
     normalizeCommandValue(itemInput?.command),
     normalizeCommandValue(itemResult?.command),
+    normalizeCommandValue(dataInput?.command),
     normalizeCommandValue(data?.command),
+    data ? synthesizeClaudeCodeToolCommand(data) : null,
   ];
   return candidates.find((candidate) => candidate !== null) ?? null;
 }
@@ -487,12 +527,7 @@ function pushChangedFile(target: string[], seen: Set<string>, value: unknown) {
   target.push(normalized);
 }
 
-function collectChangedFiles(
-  value: unknown,
-  target: string[],
-  seen: Set<string>,
-  depth: number,
-) {
+function collectChangedFiles(value: unknown, target: string[], seen: Set<string>, depth: number) {
   if (depth > 4 || target.length >= 12) {
     return;
   }
@@ -513,6 +548,7 @@ function collectChangedFiles(
 
   pushChangedFile(target, seen, record.path);
   pushChangedFile(target, seen, record.filePath);
+  pushChangedFile(target, seen, record.file_path);
   pushChangedFile(target, seen, record.relativePath);
   pushChangedFile(target, seen, record.filename);
   pushChangedFile(target, seen, record.newPath);
