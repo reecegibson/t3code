@@ -33,6 +33,7 @@ export interface ClaudeSessionContext {
   /** Tool calls that have been started but not yet completed. */
   activeToolCalls: Map<string, { toolName: string; startedAt: string; input: unknown }>;
   activeTurnId: string | undefined;
+  interactionMode: "default" | "plan";
   stopping: boolean;
 }
 
@@ -60,6 +61,7 @@ export interface ClaudeAgentManagerSendTurnInput {
   readonly threadId: ThreadId;
   readonly input: string;
   readonly model?: string | undefined;
+  readonly interactionMode?: "default" | "plan" | undefined;
 }
 
 export interface ClaudeAgentManagerTurnStartResult {
@@ -69,6 +71,68 @@ export interface ClaudeAgentManagerTurnStartResult {
 }
 
 const PROVIDER: ProviderKind = "claude-code";
+
+// ── canUseTool helpers ───────────────────────────────────────────────
+
+interface ParsedUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: Array<{ label: string; description: string }>;
+}
+
+function parseAskUserQuestions(input: Record<string, unknown>): ParsedUserInputQuestion[] {
+  const questions = input.questions as unknown[] | undefined;
+  if (!Array.isArray(questions)) return [];
+
+  return questions.map((q, index) => {
+    const qObj = q as Record<string, unknown>;
+    const opts = (qObj.options as unknown[] | undefined) ?? [];
+    return {
+      id: String(index),
+      header: (qObj.header as string) ?? "",
+      question: (qObj.question as string) ?? "",
+      options: opts.map((o) => {
+        const oObj = o as Record<string, unknown>;
+        return {
+          label: (oObj.label as string) ?? "",
+          description: (oObj.description as string) ?? "",
+        };
+      }),
+    };
+  });
+}
+
+function formatUserInputAnswers(
+  questions: ParsedUserInputQuestion[],
+  answers: Record<string, unknown>,
+): string {
+  const lines: string[] = [];
+  for (const q of questions) {
+    const answer = answers[q.question] ?? answers[q.id];
+    if (answer !== undefined) {
+      lines.push(`For '${q.question}': ${String(answer)}`);
+    }
+  }
+  return lines.length > 0 ? lines.join("\n") : "No answers provided.";
+}
+
+function toolNameToRequestType(toolName: string): string {
+  switch (toolName) {
+    case "Bash":
+      return "command_execution_approval";
+    case "Edit":
+    case "Write":
+    case "NotebookEdit":
+      return "file_change_approval";
+    case "Read":
+    case "Glob":
+    case "Grep":
+      return "file_read_approval";
+    default:
+      return "dynamic_tool_call";
+  }
+}
 
 // ── Manager ──────────────────────────────────────────────────────────
 
@@ -102,6 +166,7 @@ export class ClaudeAgentManager extends EventEmitter {
       pendingUserInputs: new Map(),
       activeToolCalls: new Map(),
       activeTurnId: turnId,
+      interactionMode: "default",
       stopping: false,
     };
 
@@ -140,6 +205,11 @@ export class ClaudeAgentManager extends EventEmitter {
 
     const turnId = randomUUID();
     context.activeTurnId = turnId;
+
+    // Update interaction mode if specified for this turn
+    if (input.interactionMode) {
+      context.interactionMode = input.interactionMode;
+    }
 
     this.updateSession(context, { status: "running", activeTurnId: turnId as TurnId });
 
@@ -308,13 +378,15 @@ export class ClaudeAgentManager extends EventEmitter {
     const { query } = sdk;
 
     const isFullAccess = options.runtimeMode !== "approval-required";
-    const permissionMode = isFullAccess ? "bypassPermissions" : "default";
+    // Always use "default" so canUseTool fires for every tool.
+    // Plan mode overrides to "plan" for SDK plan-mode behavior.
+    const permissionMode = context.interactionMode === "plan" ? "plan" : "default";
 
     this.updateSession(context, { status: "running" });
 
     const queryOptions: Record<string, unknown> = {
       permissionMode,
-      ...(isFullAccess ? { allowDangerouslySkipPermissions: true } : {}),
+      canUseTool: this.buildCanUseTool(context, isFullAccess),
       abortController: context.abortController,
       includePartialMessages: true,
       // Load user skills (slash commands) and project-level CLAUDE.md config
@@ -451,6 +523,20 @@ export class ClaudeAgentManager extends EventEmitter {
                 textDelta: text,
               });
             }
+          } else if (delta?.type === "thinking_delta") {
+            const thinking = delta.thinking as string | undefined;
+            if (thinking) {
+              this.emitEvent({
+                id: EventId.makeUnsafe(randomUUID()),
+                kind: "notification",
+                provider: PROVIDER,
+                threadId: context.session.threadId,
+                createdAt: new Date().toISOString(),
+                method: "item/reasoning/textDelta",
+                turnId: context.activeTurnId as TurnId | undefined,
+                textDelta: thinking,
+              });
+            }
           }
         }
         break;
@@ -545,6 +631,103 @@ export class ClaudeAgentManager extends EventEmitter {
         }
         break;
     }
+  }
+
+  // ── canUseTool ──────────────────────────────────────────────────
+
+  private buildCanUseTool(
+    context: ClaudeSessionContext,
+    isFullAccess: boolean,
+  ): (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { signal: AbortSignal; toolUseID: string },
+  ) => Promise<
+    | { behavior: "allow"; updatedInput: Record<string, unknown> }
+    | { behavior: "deny"; message: string; interrupt?: boolean }
+  > {
+    return async (toolName, input, _options) => {
+      // Intercept AskUserQuestion — surface to UI
+      if (toolName === "AskUserQuestion") {
+        return this.handleAskUserQuestion(context, input);
+      }
+
+      // Full-access mode: auto-allow everything else
+      if (isFullAccess) {
+        return { behavior: "allow", updatedInput: input };
+      }
+
+      // Approval-required mode: surface to UI and await decision
+      return this.handleApprovalRequest(context, toolName, input);
+    };
+  }
+
+  private async handleAskUserQuestion(
+    context: ClaudeSessionContext,
+    input: Record<string, unknown>,
+  ): Promise<{ behavior: "deny"; message: string }> {
+    const requestId = randomUUID();
+    const questions = parseAskUserQuestions(input);
+
+    const promise = new Promise<Record<string, unknown>>((resolve) => {
+      context.pendingUserInputs.set(requestId, { requestId, resolve });
+    });
+
+    this.emitEvent({
+      id: EventId.makeUnsafe(randomUUID()),
+      kind: "notification",
+      provider: PROVIDER,
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: "user-input/requested",
+      requestId: requestId as ApprovalRequestId,
+      turnId: context.activeTurnId as TurnId | undefined,
+      payload: { questions },
+    });
+
+    const answers = await promise;
+    const formattedMessage = formatUserInputAnswers(questions, answers);
+    return { behavior: "deny", message: formattedMessage };
+  }
+
+  private async handleApprovalRequest(
+    context: ClaudeSessionContext,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<
+    | { behavior: "allow"; updatedInput: Record<string, unknown> }
+    | { behavior: "deny"; message: string }
+  > {
+    const requestId = randomUUID();
+    const requestType = toolNameToRequestType(toolName);
+
+    const promise = new Promise<
+      { behavior: "allow" } | { behavior: "deny"; message?: string }
+    >((resolve) => {
+      context.pendingApprovals.set(requestId, { requestId, resolve });
+    });
+
+    this.emitEvent({
+      id: EventId.makeUnsafe(randomUUID()),
+      kind: "notification",
+      provider: PROVIDER,
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: "request/opened",
+      requestId: requestId as ApprovalRequestId,
+      turnId: context.activeTurnId as TurnId | undefined,
+      payload: {
+        requestType,
+        detail: toolName,
+        args: input,
+      },
+    });
+
+    const decision = await promise;
+    if (decision.behavior === "allow") {
+      return { behavior: "allow", updatedInput: input };
+    }
+    return { behavior: "deny", message: decision.message ?? "Denied by user." };
   }
 
   // ── Helpers ──────────────────────────────────────────────────────

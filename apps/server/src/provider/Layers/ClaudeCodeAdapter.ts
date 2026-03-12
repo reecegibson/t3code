@@ -8,6 +8,7 @@
  */
 import {
   type CanonicalItemType,
+  EventId,
   type ProviderEvent,
   type ProviderRuntimeEvent,
   RuntimeItemId,
@@ -15,6 +16,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { randomUUID } from "node:crypto";
 import { Effect, Layer, Queue, Stream } from "effect";
 
 import {
@@ -127,6 +129,14 @@ function toolNameToItemType(toolName: string): CanonicalItemType {
       }
       return "dynamic_tool_call";
   }
+}
+
+const PROPOSED_PLAN_BLOCK_REGEX = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i;
+
+function extractProposedPlanMarkdown(text: string | undefined): string | undefined {
+  const match = text ? PROPOSED_PLAN_BLOCK_REGEX.exec(text) : null;
+  const planMarkdown = match?.[1]?.trim();
+  return planMarkdown && planMarkdown.length > 0 ? planMarkdown : undefined;
 }
 
 function runtimeEventBase(
@@ -288,6 +298,23 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (method === "item/reasoning/textDelta") {
+    const textDelta = (event as { textDelta?: string }).textDelta;
+    if (!textDelta || textDelta.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "content.delta",
+        payload: {
+          streamKind: "reasoning_text",
+          delta: textDelta,
+        },
+      },
+    ];
+  }
+
   if (method === "item/tool/started") {
     const toolName = asString(payload?.toolName) ?? "unknown";
     const itemType = toolNameToItemType(toolName);
@@ -331,6 +358,56 @@ function mapToRuntimeEvents(
         payload: {
           ...(asString(payload?.toolName) ? { toolName: asString(payload?.toolName) } : {}),
           ...(asString(payload?.summary) ? { summary: asString(payload?.summary) } : {}),
+        },
+      },
+    ];
+  }
+
+  if (method === "user-input/requested") {
+    const questions = payload?.questions;
+    if (!Array.isArray(questions) || questions.length === 0) return [];
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "user-input.requested" as const,
+        payload: {
+          questions: questions as ReadonlyArray<{
+            readonly id: string;
+            readonly header: string;
+            readonly question: string;
+            readonly options: ReadonlyArray<{
+              readonly label: string;
+              readonly description: string;
+            }>;
+          }>,
+        },
+      },
+    ];
+  }
+
+  if (method === "request/opened") {
+    const reqPayload = asObject(event.payload);
+    const rawRequestType = asString(reqPayload?.requestType) ?? "unknown";
+    const validRequestTypes = [
+      "command_execution_approval",
+      "file_read_approval",
+      "file_change_approval",
+      "apply_patch_approval",
+      "exec_command_approval",
+      "tool_user_input",
+      "dynamic_tool_call",
+      "auth_tokens_refresh",
+      "unknown",
+    ] as const;
+    const requestType = validRequestTypes.find((t) => t === rawRequestType) ?? "unknown";
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "request.opened" as const,
+        payload: {
+          requestType,
+          ...(asString(reqPayload?.detail) ? { detail: asString(reqPayload?.detail) } : {}),
+          ...(reqPayload?.args !== undefined ? { args: reqPayload?.args } : {}),
         },
       },
     ];
@@ -382,19 +459,66 @@ export function makeClaudeCodeAdapterLive(
       const manager = options?.manager ?? new ClaudeAgentManager();
       const eventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
+      // Buffer assistant text per thread for proposed plan extraction on turn completion
+      const assistantTextBuffer = new Map<string, string>();
+
       // Wire manager events to the queue
       manager.on("event", (event: Partial<ProviderEvent> & { id: string; kind: string }) => {
         const threadId = (event as { threadId?: string }).threadId;
         if (!threadId) return;
 
         const canonicalThreadId = threadId as ThreadId;
+        const method = (event as { method?: string }).method ?? "";
 
         if (options?.nativeEventLogger) {
           void Effect.runPromise(
             options.nativeEventLogger.write(event, canonicalThreadId),
           );
         }
+
+        // Buffer assistant text deltas for proposed plan extraction
+        if (method === "item/agentMessage/delta") {
+          const textDelta = (event as { textDelta?: string }).textDelta;
+          if (textDelta) {
+            const existing = assistantTextBuffer.get(threadId) ?? "";
+            assistantTextBuffer.set(threadId, existing + textDelta);
+          }
+        }
+
+        // Clear buffer on new turn
+        if (method === "turn/started") {
+          assistantTextBuffer.delete(threadId);
+        }
+
         const runtimeEvents = mapToRuntimeEvents(event, canonicalThreadId);
+
+        // On turn completion, check for proposed plan in buffered assistant text
+        if (method === "turn/completed") {
+          const bufferedText = assistantTextBuffer.get(threadId);
+          assistantTextBuffer.delete(threadId);
+          const planMarkdown = extractProposedPlanMarkdown(bufferedText);
+          if (planMarkdown) {
+            const planEvent: ProviderRuntimeEvent = {
+              eventId: EventId.makeUnsafe(randomUUID()),
+              provider: PROVIDER,
+              threadId: canonicalThreadId,
+              createdAt: new Date().toISOString(),
+              ...(event.turnId ? { turnId: event.turnId as TurnId } : {}),
+              type: "turn.proposed.completed",
+              payload: {
+                planMarkdown,
+              },
+              raw: {
+                source: "claude-code.sdk.message" as const,
+                method: "turn.proposed.completed",
+                payload: { planMarkdown },
+              },
+            };
+            void Effect.runPromise(Queue.offerAll(eventQueue, [...runtimeEvents, planEvent]));
+            return;
+          }
+        }
+
         void Effect.runPromise(Queue.offerAll(eventQueue, runtimeEvents));
       });
 
@@ -435,6 +559,7 @@ export function makeClaudeCodeAdapterLive(
                 threadId: input.threadId,
                 input: input.input ?? "",
                 model: input.model,
+                interactionMode: input.interactionMode,
               });
               return {
                 threadId: result.threadId,
